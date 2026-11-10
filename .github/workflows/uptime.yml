@@ -50,6 +50,11 @@ jobs:
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           ALERT_EMAILS: ${{ secrets.ALERT_EMAILS }}
           SITE_EMAILS: ${{ secrets.SITE_EMAILS }}
+          # Text messages via Twilio (optional)
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
+          ALERT_SMS: ${{ secrets.ALERT_SMS }}
           # Site list tweaks (optional). Stored as secrets, not variables, so
           # domains and addresses are masked in the run logs.
           EXCLUDE_DOMAINS: ${{ secrets.EXCLUDE_DOMAINS }}
