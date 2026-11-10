@@ -1,0 +1,63 @@
+name: WordPress uptime monitor
+
+on:
+  schedule:
+    # Every 5 minutes. On a PRIVATE repo, use "*/30 * * * *" to stay
+    # inside the free 2,000 minutes/month (see README).
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}   # adds a "Run workflow" button for testing
+
+# Never let two runs overlap (they share the state file).
+concurrency:
+  group: uptime-monitor
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install --quiet requests
+
+      # Restore the previous run's state.json (who was up/down and since when).
+      - uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: monitor-state-${{ github.run_id }}
+          restore-keys: monitor-state-
+
+      - name: Check sites
+        run: python monitor.py
+        env:
+          WPE_API_USER_ID: ${{ secrets.WPE_API_USER_ID }}
+          WPE_API_PASSWORD: ${{ secrets.WPE_API_PASSWORD }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Email (optional)
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          ALERT_EMAILS: ${{ secrets.ALERT_EMAILS }}
+          SITE_EMAILS: ${{ secrets.SITE_EMAILS }}
+          # Site list tweaks (optional). Stored as secrets, not variables, so
+          # domains and addresses are masked in the run logs.
+          EXCLUDE_DOMAINS: ${{ secrets.EXCLUDE_DOMAINS }}
+          EXTRA_SITES: ${{ secrets.EXTRA_SITES }}
+
+      # Save state for the next run.
+      - uses: actions/cache/save@v4
+        if: always() && hashFiles('state.json') != ''
+        with:
+          path: state.json
+          key: monitor-state-${{ github.run_id }}
