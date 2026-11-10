@@ -58,6 +58,13 @@ SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 EMAIL_FROM = os.environ.get("EMAIL_FROM", "") or SMTP_USER
 ALERT_EMAILS = _list("ALERT_EMAILS")       # get every alert
 
+# SMS via Twilio (optional). Texts go out only for down, recovered and
+# platform-wide alerts, not for SSL warnings or hourly reminders.
+TWILIO_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
+TWILIO_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
+TWILIO_FROM = os.environ.get("TWILIO_FROM", "")             # e.g. +18885551234
+ALERT_SMS = [n.replace(" ", "") for n in _list("ALERT_SMS")]  # e.g. +15551234567
+
 
 def _parse_site_emails(raw):
     """'a.com=x@y.com z@y.com; b.com=c@d.com' -> {'a.com': [...], 'b.com': [...]}"""
@@ -246,10 +253,40 @@ def triage(domain, detail):
 # bad run doesn't flood anyone's inbox.
 
 OUTBOX = []  # list of (subject, slack_text, domains)
+SMS_OUTBOX = []  # short texts for SMS
 
 
-def alert(subject, text, domains=()):
+def alert(subject, text, domains=(), sms=None):
     OUTBOX.append((subject, text, list(domains)))
+    if sms:
+        SMS_OUTBOX.append(sms)
+
+
+def _send_sms(to, body):
+    try:
+        r = requests.post(
+            f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_SID}/Messages.json",
+            auth=(TWILIO_SID, TWILIO_TOKEN),
+            data={"To": to, "From": TWILIO_FROM, "Body": body},
+            timeout=20,
+        )
+        if r.status_code >= 400:
+            log(f"SMS failed: HTTP {r.status_code}: {r.text[:200]}")
+    except Exception as e:
+        log(f"SMS failed: {type(e).__name__}")
+
+
+def flush_sms():
+    if not SMS_OUTBOX:
+        return
+    if TWILIO_SID and TWILIO_TOKEN and TWILIO_FROM and ALERT_SMS:
+        body = "Uptime: " + "\n".join(SMS_OUTBOX)
+        if len(body) > 600:  # keep it to a few SMS segments
+            body = body[:590] + "\n(more by email)"
+        for number in ALERT_SMS:
+            _send_sms(number, body)
+        log(f"Texted {len(ALERT_SMS)} number(s).")
+    SMS_OUTBOX.clear()
 
 
 def _plain(text):
@@ -286,6 +323,7 @@ def _send_email(recipients, subject, body):
 
 
 def flush_alerts():
+    flush_sms()
     if not OUTBOX:
         return
     if not SLACK_WEBHOOK and not SMTP_HOST:
@@ -339,7 +377,8 @@ def main():
         if not sites and not EXTRA_SITES:
             alert("Monitor cannot reach WP Engine API",
                   ":warning: Uptime monitor could not reach the WP Engine API and has no "
-                  "cached site list. Check the WPE_API_USER_ID / WPE_API_PASSWORD secrets.")
+                  "cached site list. Check the WPE_API_USER_ID / WPE_API_PASSWORD secrets.",
+                  sms="Monitor can't reach WP Engine API. Check GitHub secrets.")
             flush_alerts()
             save_state(state)
             sys.exit(1)
@@ -379,14 +418,15 @@ def main():
               f":rotating_light: *{len(newly_down)} sites went down at the same time.* "
               f"This looks like a WP Engine platform or shared-server issue rather than "
               f"individual sites.\nCheck https://wpenginestatus.com\n{lines}",
-              [d for d, _ in newly_down])
+              [d for d, _ in newly_down],
+              sms=f"{len(newly_down)} sites DOWN at once, possible WP Engine issue.")
     else:
         for i, (d, det) in enumerate(newly_down):
             msg = f":red_circle: *{d} is DOWN*\n{det.get('error')}"
             diagnosis = triage(d, det) if i < MAX_TRIAGE else None
             if diagnosis:
                 msg += f"\n*Likely cause (Claude):* {diagnosis}"
-            alert(f"DOWN: {d}", msg, [d])
+            alert(f"DOWN: {d}", msg, [d], sms=f"DOWN {d} - {det.get('error')}"[:160])
 
     # ---- reminders for long outages
     if REMINDER_MINUTES > 0:
@@ -402,7 +442,8 @@ def main():
     # ---- recoveries
     for d, prev in recovered:
         dur = fmt_duration(prev["since"]) if prev.get("since") else "unknown"
-        alert(f"RECOVERED: {d}", f":large_green_circle: *{d} is back up* (was down {dur})", [d])
+        alert(f"RECOVERED: {d}", f":large_green_circle: *{d} is back up* (was down {dur})", [d],
+              sms=f"BACK UP {d} (down {dur})")
 
     # ---- SSL expiry, warned at most once per day per site
     today = now().date().isoformat()
